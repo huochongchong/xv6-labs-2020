@@ -79,6 +79,9 @@ int             pipealloc(struct file**, struct file**);
 void            pipeclose(struct pipe*, int);
 int             piperead(struct pipe*, uint64, int);
 int             pipewrite(struct pipe*, uint64, int);
+// vmcopyin.c
+int             copyin_new(pagetable_t, char *, uint64, uint64);
+int             copyinstr_new(pagetable_t, char *, uint64, uint64);
 
 // printf.c
 void            printf(char*, ...);
@@ -91,6 +94,7 @@ void            exit(int);
 int             fork(void);
 int             growproc(int);
 pagetable_t     proc_pagetable(struct proc *);
+void            proc_freekernelpt(pagetable_t); // 释放进程内核页表
 void            proc_freepagetable(pagetable_t, uint64);
 int             kill(int);
 struct cpu*     mycpu(void);
@@ -158,8 +162,15 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+// vm.c
+void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
+void            u2kvmremove(pagetable_t, uint64, uint64);
+int             check_plic_limit(uint64);
 void            kvminit(void);
+void            uvmmap(pagetable_t, uint64, uint64, uint64, int);
+pagetable_t     proc_kpt_init(void); // 用于内核页表的初始化
 void            kvminithart(void);
+void            proc_inithart(pagetable_t); // 将进程的内核页表保存到SATP寄存器
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
@@ -178,6 +189,7 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+void            vmprint(pagetable_t);
 
 // plic.c
 void            plicinit(void);
@@ -222,4 +234,7 @@ void            sockclose(struct sock *);
 int             sockread(struct sock *, uint64, int);
 int             sockwrite(struct sock *, uint64, int);
 void            sockrecvudp(struct mbuf*, uint32, uint16, uint16);
+
+
+
 #endif

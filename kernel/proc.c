@@ -109,6 +109,7 @@ found:
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    freeproc(p);
     release(&p->lock);
     return 0;
   }
@@ -121,6 +122,29 @@ found:
     return 0;
   }
 
+  // Initialize the kernel page table
+  p->kernelpt = proc_kpt_init();
+  if(p->kernelpt == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid guard page.
+  char *pa = kalloc();
+  if(pa == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  
+  uint64 va = KSTACK((int)(p - proc));
+  
+  // Map kernel stack to process's kernel page table
+  uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -129,7 +153,6 @@ found:
 
   return p;
 }
-
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -139,10 +162,25 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
+  
+  // Free kernel stack FIRST
+  if(p->kstack) {
+    // 注意：这里 do_free=1 表示释放物理内存
+    uvmunmap(p->kernelpt, p->kstack, 1, 1);
+    p->kstack = 0;
+  }
+  
+  // Then free kernel page table
+  if(p->kernelpt) {
+    proc_freekernelpt(p->kernelpt);
+    p->kernelpt = 0;
+  }
+  
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -212,23 +250,26 @@ void
 userinit(void)
 {
   struct proc *p;
-
+  
   p = allocproc();
   initproc = p;
   
-  // allocate one user page and copy init's instructions
-  // and data into it.
+  // 初始化用户页表
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
-  // prepare for the very first "return" from kernel to user.
-  p->trapframe->epc = 0;      // user program counter
-  p->trapframe->sp = PGSIZE;  // user stack pointer
+  // 准备陷阱帧
+  memset(p->trapframe, 0, sizeof(*p->trapframe));
+  p->trapframe->epc = 0;      // 用户程序计数器
+  p->trapframe->sp = PGSIZE;  // 用户栈指针
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+
+  // 将用户映射添加到内核页表
+  u2kvmcopy( p->pagetable, p->kernelpt,0, p->sz);
 
   release(&p->lock);
 }
@@ -238,20 +279,30 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint64 sz;  // 改为 uint64 以匹配 p->sz 的类型
   struct proc *p = myproc();
 
   sz = p->sz;
   if(n > 0){
+    // 更严格的 PLIC 限制检查
+    if(sz + n >= PLIC){  // 直接比较，不需要 PGROUNDUP
+      return -1;
+    }
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // 复制新增的部分到内核页表
+    u2kvmcopy(p->pagetable, p->kernelpt, p->sz, sz);
   } else if(n < 0){
+    uint64 oldsz = p->sz;
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // 从内核页表中移除缩小的部分
+    u2kvmremove(p->kernelpt, sz, oldsz);
   }
   p->sz = sz;
   return 0;
 }
+
 
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
@@ -274,9 +325,9 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  // 复制到新进程的内核页表
+  u2kvmcopy(np->pagetable,np->kernelpt,0, np->sz);
   np->parent = p;
-
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -298,6 +349,23 @@ fork(void)
   release(&np->lock);
 
   return pid;
+}
+void
+proc_freekernelpt(pagetable_t kernelpt)
+{
+  // similar to the freewalk method
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kernelpt[i];
+    if(pte & PTE_V){
+      kernelpt[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }
 
 // Pass p's abandoned children to init.
@@ -473,7 +541,9 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        proc_inithart(p->kernelpt);
         swtch(&c->context, &p->context);
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

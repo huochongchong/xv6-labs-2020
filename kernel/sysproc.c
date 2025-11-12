@@ -41,14 +41,24 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
+  uint64 addr;
   int n;
+  struct proc *p = myproc();
 
   if(argint(0, &n) < 0)
     return -1;
-  addr = myproc()->sz;
+  addr = p->sz;
+  
   if(growproc(n) < 0)
     return -1;
+  
+  // 修正参数顺序
+  if(n > 0){
+    u2kvmcopy(p->pagetable, p->kernelpt, addr, p->sz);  // 正确顺序
+  } else if(n < 0) {
+    u2kvmremove(p->kernelpt, p->sz, addr);
+  }
+  
   return addr;
 }
 

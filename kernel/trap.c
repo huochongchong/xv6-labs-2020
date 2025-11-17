@@ -67,6 +67,29 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    // 处理页面错误 (13: load page fault, 15: store page fault)
+    uint64 fault_va = r_stval();  // 获取出错的虚拟地址
+    
+    // 检查错误地址是否有效
+    if(fault_va >= p->sz) {
+      // 地址超出进程内存范围
+      printf("usertrap(): page fault va %p beyond process size %p\n", fault_va, p->sz);
+      p->killed = 1;
+    } else if(cowpage(p->pagetable, fault_va) != 0) {
+      // 不是 COW 页面，是真正的页面错误
+      printf("usertrap(): real page fault va %p\n", fault_va);
+      p->killed = 1;
+    } else {
+      // 是 COW 页面，尝试分配新的物理页
+      void* new_pa = cowalloc(p->pagetable, PGROUNDDOWN(fault_va));
+      if(new_pa == 0) {
+        // 分配失败，可能是内存不足
+        printf("usertrap(): cowalloc failed for va %p\n", fault_va);
+        p->killed = 1;
+      }
+      // 如果分配成功，页面错误处理完成，继续执行
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -83,7 +106,7 @@ usertrap(void)
   usertrapret();
 }
 
-//
+
 // return to user space
 //
 void

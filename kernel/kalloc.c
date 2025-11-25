@@ -25,7 +25,7 @@ struct {
 } kmem[NCPU];
 
 void
-kinit()
+kinit()//修改，kinit，为所有锁初始化“kmem”开头的名称
 {
   char lockname[8];
   for(int i = 0;i < NCPU; i++) {
@@ -61,14 +61,14 @@ kfree(void *pa)
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
-
-  push_off();  // 关中断
+  //使用cpuid()和它返回的结果时必须关中断
+  push_off(); 
   int id = cpuid();
   acquire(&kmem[id].lock);
   r->next = kmem[id].freelist;
   kmem[id].freelist = r;
   release(&kmem[id].lock);
-  pop_off();  //开中断
+  pop_off();  
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -79,15 +79,14 @@ kalloc(void)
 {
   struct run *r;
 
-  push_off();// 关中断
+  push_off();
   int id = cpuid();
   acquire(&kmem[id].lock);
   r = kmem[id].freelist;
   if(r)
     kmem[id].freelist = r->next;
   else {
-    int antid;  // another id
-    // 遍历所有CPU的空闲列表
+    int antid;
     for(antid = 0; antid < NCPU; ++antid) {
       if(antid == id)
         continue;
@@ -102,8 +101,7 @@ kalloc(void)
     }
   }
   release(&kmem[id].lock);
-  pop_off();  //开中断
-
+  pop_off();  
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
